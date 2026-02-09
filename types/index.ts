@@ -14,8 +14,10 @@ export interface ChartDataPoint {
   time: number;
   measured?: number;
   predicted?: number;
+  testPredicted?: number;
+  testActual?: number;
   true?: number;
-  type: 'actual' | 'predicted';
+  type: 'actual' | 'predicted' | 'test';
 }
 
 export interface ClickedPointData {
@@ -32,7 +34,25 @@ export interface PredictionRequest {
   numPredictions: number;
 }
 
+export interface TestResult {
+  time: number;
+  actual_value: number;
+  predicted_value: number;
+  error: number;
+}
+
+export interface AccuracyMetrics {
+  mae: number;
+  rmse: number;
+  mape: number;
+  r_squared: number;
+  train_size: number;
+  test_size: number;
+}
+
 export interface PredictionResponse {
   predictions: PredictedPoint[];
   method: string;
+  accuracy?: AccuracyMetrics;
+  test_results?: TestResult[];
 }
