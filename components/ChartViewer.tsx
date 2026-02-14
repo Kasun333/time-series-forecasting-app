@@ -74,6 +74,21 @@ export default function ChartViewer({ data, trueValue, onPointClick }: ChartView
         />
       );
     }
+
+    if (dataKey === 'testPredicted' && payload.testPredicted !== undefined) {
+      return (
+        <Dot
+          cx={cx}
+          cy={cy}
+          r={5}
+          fill="#f97316"
+          stroke="#ea580c"
+          strokeWidth={2}
+          onClick={(e) => handleDotClick(props, e)}
+          style={{ cursor: 'pointer' }}
+        />
+      );
+    }
     
     return null;
   };
@@ -90,6 +105,18 @@ export default function ChartViewer({ data, trueValue, onPointClick }: ChartView
             <p className="text-sm text-blue-600">
               Measured: {data.measured.toFixed(2)}
             </p>
+          )}
+          {data.testPredicted !== undefined && (
+            <>
+              <p className="text-sm text-orange-600">
+                Test Predicted: {data.testPredicted.toFixed(2)}
+              </p>
+              {data.testActual !== undefined && (
+                <p className="text-sm text-red-600 mt-1 pt-1 border-t border-gray-200">
+                  Error: {(data.testActual - data.testPredicted).toFixed(4)}
+                </p>
+              )}
+            </>
           )}
           {data.predicted !== undefined && (
             <p className="text-sm text-green-600">
@@ -179,6 +206,19 @@ export default function ChartViewer({ data, trueValue, onPointClick }: ChartView
               connectNulls={false}
               isAnimationActive={true}
             />
+
+            {/* Test predictions line (model tested on 20% data) */}
+            <Line
+              type="monotone"
+              dataKey="testPredicted"
+              stroke="#f97316"
+              strokeWidth={2}
+              strokeDasharray="3 3"
+              name="Test Predicted (20%)"
+              dot={<CustomDot />}
+              connectNulls={false}
+              isAnimationActive={true}
+            />
             
             {/* Predicted values line */}
             <Line
@@ -187,7 +227,7 @@ export default function ChartViewer({ data, trueValue, onPointClick }: ChartView
               stroke="#10b981"
               strokeWidth={2}
               strokeDasharray="5 5"
-              name="Predicted"
+              name="Future Predicted"
               dot={<CustomDot />}
               connectNulls={false}
               isAnimationActive={true}

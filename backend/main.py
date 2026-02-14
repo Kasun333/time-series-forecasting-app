@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from prophet import Prophet
 import pandas as pd
-from typing import List
+import numpy as np
+from typing import List, Optional
 import logging
+import math
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,9 +35,25 @@ class PredictedPoint(BaseModel):
     time: float
     predicted_value: float
 
+class TestResult(BaseModel):
+    time: float
+    actual_value: float
+    predicted_value: float
+    error: float
+
+class AccuracyMetrics(BaseModel):
+    mae: float  # Mean Absolute Error
+    rmse: float  # Root Mean Squared Error
+    mape: float  # Mean Absolute Percentage Error
+    r_squared: float  # R² Score
+    train_size: int
+    test_size: int
+
 class PredictionResponse(BaseModel):
     predictions: List[PredictedPoint]
     method: str
+    accuracy: Optional[AccuracyMetrics] = None
+    test_results: Optional[List[TestResult]] = None
 
 @app.get("/")
 async def root():
@@ -48,6 +66,45 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+def calculate_metrics(actual: list, predicted: list) -> AccuracyMetrics:
+    """Calculate accuracy metrics for model evaluation."""
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    
+    # Mean Absolute Error
+    mae = float(np.mean(np.abs(actual - predicted)))
+    
+    # Root Mean Squared Error
+    rmse = float(np.sqrt(np.mean((actual - predicted) ** 2)))
+    
+    # Mean Absolute Percentage Error (avoid division by zero)
+    non_zero_mask = actual != 0
+    if np.any(non_zero_mask):
+        mape = float(np.mean(np.abs((actual[non_zero_mask] - predicted[non_zero_mask]) / actual[non_zero_mask])) * 100)
+    else:
+        mape = 0.0
+    
+    # R² Score
+    ss_res = np.sum((actual - predicted) ** 2)
+    ss_tot = np.sum((actual - np.mean(actual)) ** 2)
+    r_squared = float(1 - (ss_res / ss_tot)) if ss_tot != 0 else 0.0
+    
+    return AccuracyMetrics(
+        mae=round(mae, 4),
+        rmse=round(rmse, 4),
+        mape=round(mape, 4),
+        r_squared=round(r_squared, 4),
+        train_size=0,  # Will be set by caller
+        test_size=0    # Will be set by caller
+    )
+
+def time_to_timestamp(t: float) -> pd.Timestamp:
+    """Convert time value to pandas Timestamp."""
+    if t > 1000000000:
+        return pd.Timestamp.fromtimestamp(t)
+    else:
+        return pd.Timestamp('2020-01-01') + pd.Timedelta(days=t)
 
 @app.post("/api/predict", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
@@ -67,23 +124,27 @@ async def predict(request: PredictionRequest):
                 detail="Number of predictions must be between 1 and 100"
             )
         
-        # Prepare data for Prophet
-        # Prophet requires columns named 'ds' (datestamp) and 'y' (value)
-        df = pd.DataFrame([
-            {
-                'ds': pd.Timestamp.fromtimestamp(point.time) if point.time > 1000000000 
-                     else pd.Timestamp('2020-01-01') + pd.Timedelta(days=point.time),
-                'y': point.measured_value
-            }
-            for point in request.data
+        # --- 80/20 Train-Test Split ---
+        total_points = len(request.data)
+        train_size = max(2, int(total_points * 0.8))  # At least 2 for training
+        test_size = total_points - train_size
+        
+        train_data = request.data[:train_size]
+        test_data = request.data[train_size:]
+        
+        logger.info(f"Split data: {train_size} train, {test_size} test points")
+        
+        # Prepare training data for Prophet
+        train_df = pd.DataFrame([
+            {'ds': time_to_timestamp(point.time), 'y': point.measured_value}
+            for point in train_data
         ])
         
-        logger.info(f"Prepared DataFrame with {len(df)} rows")
+        logger.info(f"Prepared training DataFrame with {len(train_df)} rows")
         
-        # Initialize and fit Prophet model
-        # Disable daily/weekly/yearly seasonality for generic time series
+        # Initialize and fit Prophet model on TRAINING data only
         model = Prophet(
-            changepoint_prior_scale=0.05,  # Flexibility of trend changes
+            changepoint_prior_scale=0.05,
             seasonality_mode='additive',
             daily_seasonality=False,
             weekly_seasonality=False,
@@ -91,34 +152,61 @@ async def predict(request: PredictionRequest):
             interval_width=0.95
         )
         
-        # Add custom seasonality if enough data points
-        if len(df) >= 10:
-            model.add_seasonality(name='custom', period=len(df)/2, fourier_order=3)
+        if len(train_df) >= 10:
+            model.add_seasonality(name='custom', period=len(train_df)/2, fourier_order=3)
         
-        logger.info("Fitting Prophet model...")
-        model.fit(df)
+        logger.info("Fitting Prophet model on training data...")
+        model.fit(train_df)
         logger.info("Model fitted successfully")
         
-        # Calculate time step from data
+        # --- Evaluate on Test Data (20%) ---
+        accuracy = None
+        test_results = None
+        
+        if test_size > 0:
+            test_df = pd.DataFrame([
+                {'ds': time_to_timestamp(point.time)}
+                for point in test_data
+            ])
+            
+            test_forecast = model.predict(test_df)
+            
+            actual_values = [point.measured_value for point in test_data]
+            predicted_values = [float(test_forecast.iloc[i]['yhat']) for i in range(len(test_forecast))]
+            
+            # Calculate accuracy metrics
+            accuracy = calculate_metrics(actual_values, predicted_values)
+            accuracy.train_size = train_size
+            accuracy.test_size = test_size
+            
+            # Build test results
+            test_results = [
+                TestResult(
+                    time=test_data[i].time,
+                    actual_value=actual_values[i],
+                    predicted_value=predicted_values[i],
+                    error=round(actual_values[i] - predicted_values[i], 4)
+                )
+                for i in range(test_size)
+            ]
+            
+            logger.info(f"Test metrics - MAE: {accuracy.mae}, RMSE: {accuracy.rmse}, MAPE: {accuracy.mape}%, R²: {accuracy.r_squared}")
+        
+        # --- Generate Future Predictions ---
         time_values = [point.time for point in request.data]
         time_step = (time_values[-1] - time_values[-2]) if len(time_values) >= 2 else 1
         
-        # Create future dataframe for predictions
         last_time = time_values[-1]
         future_times = [last_time + time_step * (i + 1) for i in range(request.numPredictions)]
         
         future_df = pd.DataFrame([
-            {
-                'ds': pd.Timestamp.fromtimestamp(t) if t > 1000000000 
-                     else pd.Timestamp('2020-01-01') + pd.Timedelta(days=t)
-            }
+            {'ds': time_to_timestamp(t)}
             for t in future_times
         ])
         
-        logger.info(f"Generating {request.numPredictions} predictions...")
+        logger.info(f"Generating {request.numPredictions} future predictions...")
         forecast = model.predict(future_df)
         
-        # Extract predictions
         predictions = [
             PredictedPoint(
                 time=future_times[i],
@@ -131,7 +219,9 @@ async def predict(request: PredictionRequest):
         
         return PredictionResponse(
             predictions=predictions,
-            method="Facebook Prophet (Additive Model)"
+            method="Facebook Prophet (Additive Model)",
+            accuracy=accuracy,
+            test_results=test_results
         )
         
     except HTTPException:

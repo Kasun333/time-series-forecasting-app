@@ -5,8 +5,8 @@ import CSVUploader from '@/components/CSVUploader';
 import TrueValueInput from '@/components/TrueValueInput';
 import ChartViewer from '@/components/ChartViewer';
 import DataPointModal from '@/components/DataPointModal';
-import { DataPoint, PredictedPoint, ChartDataPoint, ClickedPointData } from '@/types';
-import { LineChart, Loader2 } from 'lucide-react';
+import { DataPoint, PredictedPoint, ChartDataPoint, ClickedPointData, AccuracyMetrics, TestResult } from '@/types';
+import { LineChart, Loader2, BarChart3, Target, TrendingUp, Percent } from 'lucide-react';
 
 export default function Home() {
   const [data, setData] = useState<DataPoint[]>([]);
@@ -17,11 +17,15 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [predictionMethod, setPredictionMethod] = useState<string>('');
+  const [accuracy, setAccuracy] = useState<AccuracyMetrics | null>(null);
+  const [testResults, setTestResults] = useState<TestResult[]>([]);
 
   const handleDataLoaded = async (newData: DataPoint[]) => {
     setData(newData);
     setPredictions([]);
     setError('');
+    setAccuracy(null);
+    setTestResults([]);
     
     // Automatically generate predictions when data is loaded
     await generatePredictions(newData, numPredictions);
@@ -56,10 +60,14 @@ export default function Home() {
       const result = await response.json();
       setPredictions(result.predictions);
       setPredictionMethod(result.method || '');
+      setAccuracy(result.accuracy || null);
+      setTestResults(result.test_results || []);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to generate predictions';
       setError(errorMessage);
       setPredictions([]);
+      setAccuracy(null);
+      setTestResults([]);
     } finally {
       setIsLoading(false);
     }
@@ -72,13 +80,20 @@ export default function Home() {
     }
   };
 
-  // Combine actual and predicted data for the chart
+  // Combine actual, test, and predicted data for the chart
   const chartData: ChartDataPoint[] = [
     ...data.map((point) => ({
       time: point.time,
       measured: point.measured_value,
       true: trueValue ?? undefined,
       type: 'actual' as const,
+    })),
+    ...testResults.map((tr) => ({
+      time: tr.time,
+      testPredicted: tr.predicted_value,
+      testActual: tr.actual_value,
+      true: trueValue ?? undefined,
+      type: 'test' as const,
     })),
     ...predictions.map((point) => ({
       time: point.time,
@@ -133,8 +148,20 @@ export default function Home() {
                     <span className="text-sm text-gray-600">Data Points</span>
                     <span className="text-sm font-semibold text-gray-900">{data.length}</span>
                   </div>
+                  {accuracy && (
+                    <>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600">Training Set (80%)</span>
+                        <span className="text-sm font-semibold text-blue-600">{accuracy.train_size} points</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600">Test Set (20%)</span>
+                        <span className="text-sm font-semibold text-orange-600">{accuracy.test_size} points</span>
+                      </div>
+                    </>
+                  )}
                   <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600">Predictions</span>
+                    <span className="text-sm text-gray-600">Future Predictions</span>
                     <span className="text-sm font-semibold text-gray-900">{predictions.length}</span>
                   </div>
                   {predictionMethod && (
@@ -160,6 +187,78 @@ export default function Home() {
                       </div>
                     </>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Model Accuracy Metrics */}
+            {accuracy && (
+              <div className="bg-white rounded-lg border border-gray-200 p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                  <Target className="w-5 h-5 text-green-600 mr-2" />
+                  Model Accuracy
+                </h3>
+                <div className="space-y-3">
+                  {/* R² Score - Main Metric */}
+                  <div className="bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium text-blue-800 flex items-center">
+                        <TrendingUp className="w-4 h-4 mr-1" />
+                        R² Score
+                      </span>
+                      <span className={`text-lg font-bold ${
+                        accuracy.r_squared >= 0.9 ? 'text-green-600' :
+                        accuracy.r_squared >= 0.7 ? 'text-yellow-600' :
+                        accuracy.r_squared >= 0.5 ? 'text-orange-600' :
+                        'text-red-600'
+                      }`}>
+                        {(accuracy.r_squared * 100).toFixed(2)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-blue-200 rounded-full h-2">
+                      <div
+                        className={`h-2 rounded-full ${
+                          accuracy.r_squared >= 0.9 ? 'bg-green-500' :
+                          accuracy.r_squared >= 0.7 ? 'bg-yellow-500' :
+                          accuracy.r_squared >= 0.5 ? 'bg-orange-500' :
+                          'bg-red-500'
+                        }`}
+                        style={{ width: `${Math.max(0, Math.min(100, accuracy.r_squared * 100))}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-xs text-blue-600 mt-1">
+                      {accuracy.r_squared >= 0.9 ? 'Excellent fit' :
+                       accuracy.r_squared >= 0.7 ? 'Good fit' :
+                       accuracy.r_squared >= 0.5 ? 'Moderate fit' :
+                       'Poor fit'}
+                    </p>
+                  </div>
+
+                  {/* Other Metrics */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-gray-50 rounded-lg p-3 text-center">
+                      <span className="text-xs text-gray-500 block">MAE</span>
+                      <span className="text-sm font-bold text-gray-900">{accuracy.mae.toFixed(4)}</span>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3 text-center">
+                      <span className="text-xs text-gray-500 block">RMSE</span>
+                      <span className="text-sm font-bold text-gray-900">{accuracy.rmse.toFixed(4)}</span>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-3 text-center">
+                      <span className="text-xs text-gray-500 block flex items-center justify-center">
+                        MAPE
+                      </span>
+                      <span className="text-sm font-bold text-gray-900">{accuracy.mape.toFixed(2)}%</span>
+                    </div>
+                  </div>
+
+                  {/* Metric Descriptions */}
+                  <div className="pt-2 border-t border-gray-200 text-xs text-gray-500 space-y-1">
+                    <p><strong>MAE:</strong> Mean Absolute Error (lower is better)</p>
+                    <p><strong>RMSE:</strong> Root Mean Square Error (lower is better)</p>
+                    <p><strong>MAPE:</strong> Mean Absolute % Error (lower is better)</p>
+                    <p><strong>R²:</strong> Coefficient of Determination (closer to 100% is better)</p>
+                  </div>
                 </div>
               </div>
             )}
